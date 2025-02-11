@@ -1,158 +1,201 @@
-import { exec } from "child_process";
-import fs from "fs";
+import { spawn } from "child_process";
 import path from "path";
+import fs from "fs";
 
-// Function to get video metadata using ffprobe
-const getVideoInfo = (inputPath) => {
-    return new Promise((resolve, reject) => {
-        const ffprobeCommand = `ffprobe -v quiet -print_format json -show_format -show_streams ${inputPath}`;
-
-        exec(ffprobeCommand, (error, stdout) => {
-            if (error) {
-                console.error("Error getting video info:", error);
-                reject(error);
-                return;
-            }
-
-            const info = JSON.parse(stdout);
-            const videoStream = info.streams.find(
-                (stream) => stream.codec_type === "video"
-            );
-            const audioStream = info.streams.find(
-                (stream) => stream.codec_type === "audio"
-            );
-
-            const videoInfo = {
-                filename: path.basename(inputPath),
-                width: parseInt(videoStream.width),
-                height: parseInt(videoStream.height),
-                bitrate: parseInt(videoStream.bit_rate) || parseInt(info.format.bit_rate), // Get from stream or format
-                duration: parseFloat(info.format.duration),
-                size: parseInt(info.format.size),
-                codec: videoStream.codec_name,
-                fps: eval(videoStream.r_frame_rate).toFixed(2),
-                audioCodec: audioStream ? audioStream.codec_name : "none",
-            };
-
-            resolve(videoInfo);
-        });
+export const generateHLSPlaylist = (videoPath, outputDir, startTime = 0) => {
+    const startProcessTime = Date.now();
+    console.log("Starting HLS conversion:", {
+        videoPath,
+        outputDir,
+        startTime,
+        startedAt: new Date().toISOString(),
     });
-};
 
-// Function to format file size
-const formatSize = (bytes) => {
-    const sizes = ["Bytes", "KB", "MB", "GB"];
-    if (bytes === 0) return "0 Byte";
-    const i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)));
-    return Math.round((bytes / Math.pow(1024, i)) * 100) / 100 + " " + sizes[i];
-};
+    return new Promise((resolve, reject) => {
+        const segmentDuration = 4; // 4 seconds per segment
+        const playlistFile = path.join(outputDir, "index.m3u8");
+        const segmentPattern = path.join(outputDir, "segment_%03d.ts");
+        let currentSegment = 0;
+        let segmentStartTime = Date.now();
+        let currentStats = {
+            fps: 0,
+            frames: 0,
+            time: "00:00:00",
+            bitrate: "0",
+            speed: "0",
+            q: 0,
+        };
 
-// Function to format video duration
-const formatDuration = (seconds) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${hrs}:${mins.toString().padStart(2, "0")}:${secs
-        .toString()
-        .padStart(2, "0")}`;
-};
-
-// Main function to segment video and log details
-export const segmentVideo = async (inputPath, outputPath) => {
-    return new Promise(async (resolve, reject) => {
-        try {
-            const startTime = Date.now();
-            const videoInfo = await getVideoInfo(inputPath);
-            const hlsPath = `${outputPath}/index.m3u8`;
-
-            // First log input video details
-            console.log("\n=================================");
-            console.log("📊 Video Processing Information");
-            console.log("=================================");
-            console.log(`1. Original File: ${videoInfo.filename}`);
-            console.log(
-                `2. Resolution:    ${videoInfo.width}x${videoInfo.height}`
-            );
-            console.log(
-                `3. Bitrate:       ${(videoInfo.bitrate / 1024 / 1024).toFixed(
-                    2
-                )} Mbps`
-            );
-            console.log(`4. FPS:           ${videoInfo.fps}`);
-            console.log(
-                `5. Duration:      ${formatDuration(videoInfo.duration)}`
-            );
-            console.log(`8. Input Size:    ${formatSize(videoInfo.size)}`);
-
-            // ffmpeg command for HLS conversion
-           /*  const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -c:a aac -b:v 2000k -maxrate 2000k -bufsize 2000k -hls_time 10 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" ${hlsPath}`; */
-
-           /* 1. Using FFmpeg with Optimized Settings */
-           /*  const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -hls_time 6 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" ${hlsPath}`;
- */
-            /* 2.Segment-Based Encoding for Live Streaming */
-          /*   const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -preset veryfast -crf 28 -hls_time 4 -hls_list_size 0 -f hls ${hlsPath}`;
- */
-              /*3. Lower Resolution Before Encoding */
-              const ffmpegCommand = `ffmpeg -i ${inputPath} -vf "scale=-2:720" -c:v libx264 -preset veryfast -crf 28 ${hlsPath}`;
-
-            // Execute ffmpeg command
-            exec(ffmpegCommand, (error, stdout, stderr) => {
-                if (error) {
-                    console.error("Error executing ffmpeg command:", error);
-                    reject(error);
-                    return;
-                }
-
-                const endTime = Date.now();
-                const processingTime = (endTime - startTime) / 1000; // in seconds
-                const timePerMinute =
-                    processingTime / (videoInfo.duration / 60);
-
-                // Get output size and segment count
-                const segmentFiles = fs.readdirSync(outputPath);
-                const tsFiles = segmentFiles.filter((f) => f.endsWith(".ts"));
-                const totalOutputSize = segmentFiles.reduce((total, file) => {
-                    return (
-                        total + fs.statSync(path.join(outputPath, file)).size
-                    );
-                }, 0);
-
-                // Log processing results
-                console.log(
-                    `6. Process Time:  ${processingTime.toFixed(2)} seconds`
-                );
-                console.log(
-                    `7. Time/Minute:   ${timePerMinute.toFixed(2)} seconds`
-                );
-                console.log(`8. Input Size:    ${formatSize(videoInfo.size)}`);
-                console.log(`9. Output Size:   ${formatSize(totalOutputSize)}`);
-                console.log(`10. Segments:     ${tsFiles.length} files`);
-                console.log("\nSegment List:");
-                console.log("---------------------------------");
-
-                // Log resolution, fps, and size for each segment
-                tsFiles.forEach(async (file) => {
-                    const segmentPath = path.join(outputPath, file);
-                    const size = formatSize(fs.statSync(segmentPath).size);
-                    const segmentInfo = await getVideoInfo(segmentPath);
-                    console.log(
-                        `   ${file} (${size}) - Resolution: ${segmentInfo.width}x${segmentInfo.height}, FPS: ${segmentInfo.fps}, Bitrate: ${(segmentInfo.bitrate / 1024 / 1024).toFixed(2)} Mbps
-`
-                    );
-                });
-
-                console.log("=================================\n");
-
-                resolve({
-                    success: true,
-                    processingTime,
-                    outputSize: totalOutputSize,
-                    segmentCount: tsFiles.length,
-                });
-            });
-        } catch (error) {
-            reject(error);
+        // Ensure the output directory exists
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
         }
+
+        console.log("Creating HLS files in:", outputDir);
+        console.log("Segment duration:", segmentDuration, "seconds");
+
+        const hlsPlaylist = spawn("ffmpeg", [
+            "-ss",
+            String(startTime),
+            "-i",
+            videoPath,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "28",
+            "-vf",
+            "scale=-2:720,fps=fps=30",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-hls_time",
+            String(segmentDuration),
+            "-hls_list_size",
+            "0",
+            "-hls_segment_filename",
+            segmentPattern,
+            "-hls_flags",
+            "independent_segments+program_date_time",
+            "-hls_segment_type",
+            "mpegts",
+            "-progress",
+            "pipe:1",
+            "-stats_period",
+            "4", // Update stats more frequently
+            "-y",
+            "-f",
+            "hls",
+            playlistFile,
+        ]);
+
+        // Cleanup function to stop FFmpeg process
+        const cleanup = () => {
+            if (!hlsPlaylist.killed) {
+                hlsPlaylist.kill("SIGINT");
+                console.log("FFmpeg process terminated");
+                // Clean up stats file
+                const statsFile = path.join(outputDir, "vstats.txt");
+                if (fs.existsSync(statsFile)) {
+                    fs.unlinkSync(statsFile);
+                }
+            }
+        };
+
+        // Listen for process termination events
+        process.on("exit", cleanup);
+        process.on("SIGINT", cleanup);
+        process.on("SIGTERM", cleanup);
+
+        // Parse FFmpeg progress output
+        hlsPlaylist.stdout.on("data", (data) => {
+            const output = data.toString();
+
+            // Parse various FFmpeg stats
+            const frameMatch = output.match(/frame=\s*(\d+)/);
+            const fpsMatch = output.match(/fps=\s*(\d+)/);
+            const qMatch = output.match(/q=\s*([\d.]+)/);
+            const timeMatch = output.match(/time=\s*(\d{2}:\d{2}:\d{2}.\d{2})/);
+            const bitrateMatch = output.match(/bitrate=\s*([\d.]+\w+)/);
+            const speedMatch = output.match(/speed=\s*([\d.]+)x/);
+
+            if (frameMatch) currentStats.frames = parseInt(frameMatch[1]);
+            if (fpsMatch) currentStats.fps = parseInt(fpsMatch[1]);
+            if (qMatch) currentStats.q = parseFloat(qMatch[1]);
+            if (timeMatch) currentStats.time = timeMatch[1];
+            if (bitrateMatch) currentStats.bitrate = bitrateMatch[1];
+            if (speedMatch) currentStats.speed = parseFloat(speedMatch[1]);
+
+            // Log when a new segment is created
+            if (output.includes("segment:")) {
+                currentSegment++;
+                const segmentFile = path.join(
+                    outputDir,
+                    `segment_${String(currentSegment).padStart(3, "0")}.ts`
+                );
+
+                if (fs.existsSync(segmentFile)) {
+                    const segmentStats = fs.statSync(segmentFile);
+                    const segmentProcessTime = Date.now() - segmentStartTime;
+                    const segmentSizeMB = segmentStats.size / 1024 / 1024;
+                    const segmentBitrateMbps =
+                        (segmentSizeMB * 8) / segmentDuration;
+
+                    console.log(`Segment ${currentSegment} completed:`, {
+                        duration: segmentDuration,
+                        size: `${segmentSizeMB.toFixed(2)} MB`,
+                        bitrate: `${segmentBitrateMbps.toFixed(2)} Mbps`,
+                        processTime: `${segmentProcessTime}ms`,
+                        fps: currentStats.fps,
+                        frames: currentStats.frames,
+                        quality: currentStats.q,
+                        speed: `${currentStats.speed}x`,
+                        path: segmentFile,
+                    });
+
+                    segmentStartTime = Date.now(); // Reset for next segment
+                }
+            }
+        });
+
+        // Log FFmpeg detailed processing information
+        hlsPlaylist.stderr.on("data", (data) => {
+            const output = data.toString();
+            if (output.includes("time=")) {
+                console.log("Processing:", {
+                    frames: currentStats.frames,
+                    fps: currentStats.fps,
+                    quality: currentStats.q,
+                    time: currentStats.time,
+                    bitrate: currentStats.bitrate,
+                    speed: `${currentStats.speed}x`,
+                });
+            }
+        });
+
+        hlsPlaylist.on("close", (code) => {
+            // Remove process termination listeners
+            process.off("exit", cleanup);
+            process.off("SIGINT", cleanup);
+            process.off("SIGTERM", cleanup);
+
+            const totalProcessTime = Date.now() - startProcessTime;
+            const totalSizeMB =
+                currentSegment *
+                (fs.statSync(path.join(outputDir, `segment_001.ts`)).size /
+                    1024 /
+                    1024);
+
+            if (code !== 0) {
+                console.error("FFmpeg process failed with code:", code);
+                reject(new Error(`FFmpeg process exited with code ${code}`));
+            } else {
+                if (fs.existsSync(playlistFile)) {
+                    console.log("HLS conversion completed:", {
+                        totalTime: `${totalProcessTime}ms`,
+                        segments: currentSegment,
+                        totalSize: `${totalSizeMB.toFixed(2)} MB`,
+                        averageBitrate: `${(
+                            (totalSizeMB * 8) /
+                            (currentSegment * segmentDuration)
+                        ).toFixed(2)} Mbps`,
+                        averageSpeed: `${currentStats.speed}x`,
+                        playlistPath: playlistFile,
+                    });
+                    resolve(playlistFile);
+                } else {
+                    console.error("Playlist file not found after conversion");
+                    reject(new Error("Playlist file not created"));
+                }
+            }
+        });
+
+        hlsPlaylist.on("error", (err) => {
+            console.error("FFmpeg process error:", err);
+            cleanup();
+            reject(err);
+        });
     });
 };

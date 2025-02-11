@@ -6,6 +6,9 @@ package-lock.json
 dist/
 build/
 
+videos/
+converted/
+
 # Environment variables
 .env
 .env.local

@@ -5,13 +5,229 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+
+        .video-container {
+            margin: 20px 0;
+        }
+
+        .video-item {
+            cursor: pointer;
+            padding: 12px;
+            margin: 8px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        .video-item:hover {
+            background-color: #f0f0f0;
+        }
+
+        .video-item.active {
+            background-color: #e3f2fd;
+            border-color: #2196f3;
+        }
+
+        #error-message {
+            color: #d32f2f;
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #ffebee;
+            display: none;
+        }
+
+        .loading {
+            display: none;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #e3f2fd;
+            border-radius: 4px;
+            color: #1976d2;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #1976d2;
+        }
+
+        video {
+            width: 100%;
+            max-width: 1000px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+    </style>
 </head>
 
 <body>
-    <video width="640" height="360" controls>
-        <source src="./4kvideo.mp4" type="video/mp4">
-        Your browser does not support the video tag.
-    </video>
+    <h1>Video Player</h1>
+
+    <button id="fetch-videos-btn">Refresh Video List</button>
+    <div id="error-message"></div>
+    <div id="loading" class="loading">Converting video, please wait...</div>
+
+    <ul id="video-list"></ul>
+
+    <div class="video-container">
+        <h2>Now Playing</h2>
+        <video id="video" controls></video>
+    </div>
+
+    <script>
+        const API_BASE = 'http://194.195.119.99:8080';
+        let currentHls = null;
+        let currentlyPlaying = null;
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function toggleLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        async function fetchVideos() {
+            try {
+                toggleLoading(true);
+                const response = await fetch(`${API_BASE}/api/videos`);
+                if (!response.ok) throw new Error('Failed to fetch videos');
+
+                const videos = await response.json();
+                const videoList = document.getElementById('video-list');
+                videoList.innerHTML = '';
+
+                if (videos.length === 0) {
+                    videoList.innerHTML = '<li>No videos found</li>';
+                    return;
+                }
+
+                videos.forEach(video => {
+                    const listItem = document.createElement('li');
+                    listItem.className = 'video-item';
+                    if (video === currentlyPlaying) {
+                        listItem.classList.add('active');
+                    }
+                    listItem.textContent = video;
+                    listItem.onclick = () => selectVideo(video);
+                    videoList.appendChild(listItem);
+                });
+            } catch (error) {
+                showError(`Error fetching videos: ${error.message}`);
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+        async function selectVideo(videoFile) {
+            try {
+                // Update active state in the list
+                document.querySelectorAll('.video-item').forEach(item => {
+                    item.classList.remove('active');
+                    if (item.textContent === videoFile) {
+                        item.classList.add('active');
+                    }
+                });
+
+                toggleLoading(true);
+                currentlyPlaying = videoFile;
+
+                const response = await fetch(`${API_BASE}/api/convert`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ videoFile }), // Send the full filename
+                });
+
+                if (!response.ok) {
+                    throw new Error(response.status === 404 ? 'Video not found' : 'Video conversion failed');
+                }
+
+                const data = await response.json();
+                if (data.playlist) {
+                    playVideo(`${API_BASE}${data.playlist}`);
+                }
+            } catch (error) {
+                showError(`Error converting video: ${error.message}`);
+                currentlyPlaying = null;
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+        function playVideo(videoSrc) {
+            const video = document.getElementById('video');
+
+            if (currentHls) {
+                currentHls.destroy();
+                currentHls = null;
+            }
+
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    debug: false,
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 600,
+                    maxBufferSize: 60 * 1000 * 1000, // 60MB
+                });
+
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    if (data.fatal) {
+                        showError(`Playback error: ${data.details}`);
+                    }
+                });
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function () {
+                    video.play().catch(error => {
+                        showError(`Playback error: ${error.message}`);
+                    });
+                });
+
+                hls.loadSource(videoSrc);
+                hls.attachMedia(video);
+                currentHls = hls;
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = videoSrc;
+                video.play().catch(error => {
+                    showError(`Playback error: ${error.message}`);
+                });
+            } else {
+                showError('HLS is not supported in your browser');
+            }
+        }
+
+        // Add event listener to the button
+        document.getElementById('fetch-videos-btn').addEventListener('click', fetchVideos);
+
+        // Initial video fetch
+        fetchVideos().catch(console.error);
+    </script>
 </body>
 
 </html>

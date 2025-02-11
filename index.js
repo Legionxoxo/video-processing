@@ -1,87 +1,104 @@
 import express from "express";
-import cors from "cors";
-import multer from "multer";
-import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
-import { exec } from "child_process"; // do not run this on server
-import { segmentVideo } from "./function/ffmpeg/segment.js";
-
-const port = 8080;
-const host="194.195.119.99";
+import cors from "cors";
+import { fileURLToPath } from "url";
+import { generateHLSPlaylist } from "./function/ffmpeg/segment.js";
+import { spawn } from "child_process";
 
 const app = express();
-app.use(express.static("."));
+const port = 8080;
 
-// Multer middleware
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, "./upload");
-    },
-    filename: (req, file, cb) => {
-        cb(
-            null,
-            file.fieldname + "-" + uuidv4() + path.extname(file.originalname)
-        );
-    },
-});
-
-//multer configuration
-const upload = multer({ storage: storage });
-
-app.use(
-    cors({
-        origin: ["http://localhost:5173", "http://194.195.119.99:8080","https://playhls.com/"],
-        credentials: true,
-    })
-);
-
-app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header(
-        "Access-Control-Allow-Methods",
-        "Origin, X-Requested-With, Content-Type, Accept"
-    );
-    next();
-});
-
+// Enable CORS and JSON parsing
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use("/upload", express.static("upload"));
 
+// __dirname handling for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Path for normal and converted videos
+const normalVideosPath = path.join(__dirname, "videos");
+const convertedVideosPath = path.join(__dirname, "converted");
+
+// Ensure directories exist
+[normalVideosPath, convertedVideosPath].forEach((dir) => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+// Serve static files from the current directory
+app.use(express.static(__dirname));
+
+// Serve index.html for the root route
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.post("/upload", upload.single("file"), async (req, res) => {
-    try {
-        const videoId = uuidv4();
-        const videoPath = req.file.path;
-        const outputPath = `./upload/videos/${videoId}`;
-
-        if (!fs.existsSync(outputPath)) {
-            fs.mkdirSync(outputPath, { recursive: true });
+// API to list all available normal videos
+app.get("/api/videos", (req, res) => {
+    fs.readdir(normalVideosPath, (err, files) => {
+        if (err) {
+            res.status(500).json({ message: "Error reading videos folder" });
+            return;
         }
 
-        await segmentVideo(videoPath, outputPath);
-
-        // Delete original file to save space
-        if (fs.existsSync(videoPath)) {
-            fs.unlinkSync(videoPath);
-        }
-
-        const videoUrl = `http://${host}:${port}/upload/videos/${videoId}/index.m3u8`;
-        res.json({
-            message: "Video converted successfully",
-            videoUrl: videoUrl,
-            videoId: videoId,
+        const videoFiles = files.filter((file) => {
+            const ext = path.extname(file).toLowerCase();
+            return [".mp4", ".mkv", ".avi"].includes(ext);
         });
+
+        res.json(videoFiles);
+    });
+});
+
+// Middleware to convert video to HLS
+app.post("/api/convert", async (req, res) => {
+    const { videoFile } = req.body;
+    const baseName = videoFile.split(".")[0];
+    const videoPath = path.join(normalVideosPath, videoFile);
+    const outputDir = path.join(convertedVideosPath, baseName);
+
+    console.log("Converting video:", {
+        videoFile,
+        baseName,
+        videoPath,
+        outputDir,
+    });
+
+    if (!fs.existsSync(videoPath)) {
+        console.error("Video file not found:", videoPath);
+        return res.status(404).json({ message: "Video not found" });
+    }
+
+    try {
+        if (!fs.existsSync(outputDir)) {
+            console.log("Creating output directory:", outputDir);
+            fs.mkdirSync(outputDir, { recursive: true });
+            console.log("Starting HLS conversion...");
+            await generateHLSPlaylist(videoPath, outputDir);
+            console.log("HLS conversion completed");
+        } else {
+            console.log("Using existing HLS conversion");
+        }
+
+        const playlistPath = `/converted/${baseName}/index.m3u8`;
+        console.log("Sending playlist path:", playlistPath);
+        res.json({ playlist: playlistPath });
     } catch (error) {
-        console.error("Error processing video:", error);
-        res.status(500).json({ error: "Failed to convert video" });
+        console.error("Conversion error:", error);
+        res.status(500).json({
+            message: "Video conversion failed",
+            error: error.message,
+        });
     }
 });
 
+// Serve HLS playlist and segments
+app.use("/converted", express.static(convertedVideosPath));
+
+// Start the server
 app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
+    console.log(`Server listening on http://localhost:${port}`);
 });
