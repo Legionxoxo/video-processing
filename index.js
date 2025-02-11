@@ -8,8 +8,10 @@ import { exec } from "child_process"; // do not run this on server
 import { segmentVideo } from "./function/ffmpeg/segment.js";
 
 const port = 8080;
+const host="194.195.119.99";
 
 const app = express();
+app.use(express.static("."));
 
 // Multer middleware
 const storage = multer.diskStorage({
@@ -29,7 +31,7 @@ const upload = multer({ storage: storage });
 
 app.use(
     cors({
-        origin: ["http://localhost:5173", "http://localhost:8080"],
+        origin: ["http://localhost:5173", "http://194.195.119.99:8080","https://playhls.com/"],
         credentials: true,
     })
 );
@@ -48,7 +50,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/upload", express.static("upload"));
 
 app.get("/", (req, res) => {
-    res.send({ message: "Hello World" });
+    res.sendFile(path.join(__dirname, "index.html"));
 });
 
 app.post("/upload", upload.single("file"), async (req, res) => {
@@ -68,7 +70,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
             fs.unlinkSync(videoPath);
         }
 
-        const videoUrl = `http://localhost:${port}/upload/videos/${videoId}/index.m3u8`;
+        const videoUrl = `http://${host}:${port}/upload/videos/${videoId}/index.m3u8`;
         res.json({
             message: "Video converted successfully",
             videoUrl: videoUrl,

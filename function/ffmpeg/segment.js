@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import fs from "fs";
 import path from "path";
 
+// Function to get video metadata using ffprobe
 const getVideoInfo = (inputPath) => {
     return new Promise((resolve, reject) => {
         const ffprobeCommand = `ffprobe -v quiet -print_format json -show_format -show_streams ${inputPath}`;
@@ -25,7 +26,7 @@ const getVideoInfo = (inputPath) => {
                 filename: path.basename(inputPath),
                 width: parseInt(videoStream.width),
                 height: parseInt(videoStream.height),
-                bitrate: parseInt(info.format.bit_rate),
+                bitrate: parseInt(videoStream.bit_rate) || parseInt(info.format.bit_rate), // Get from stream or format
                 duration: parseFloat(info.format.duration),
                 size: parseInt(info.format.size),
                 codec: videoStream.codec_name,
@@ -38,6 +39,7 @@ const getVideoInfo = (inputPath) => {
     });
 };
 
+// Function to format file size
 const formatSize = (bytes) => {
     const sizes = ["Bytes", "KB", "MB", "GB"];
     if (bytes === 0) return "0 Byte";
@@ -45,6 +47,7 @@ const formatSize = (bytes) => {
     return Math.round((bytes / Math.pow(1024, i)) * 100) / 100 + " " + sizes[i];
 };
 
+// Function to format video duration
 const formatDuration = (seconds) => {
     const hrs = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
@@ -54,6 +57,7 @@ const formatDuration = (seconds) => {
         .padStart(2, "0")}`;
 };
 
+// Main function to segment video and log details
 export const segmentVideo = async (inputPath, outputPath) => {
     return new Promise(async (resolve, reject) => {
         try {
@@ -81,7 +85,16 @@ export const segmentVideo = async (inputPath, outputPath) => {
             console.log(`8. Input Size:    ${formatSize(videoInfo.size)}`);
 
             // ffmpeg command for HLS conversion
-            const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -c:a aac -b:v 2000k -maxrate 2000k -bufsize 2000k -hls_time 10 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" ${hlsPath}`;
+           /*  const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -c:a aac -b:v 2000k -maxrate 2000k -bufsize 2000k -hls_time 10 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" ${hlsPath}`; */
+
+           /* 1. Using FFmpeg with Optimized Settings */
+           /*  const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -hls_time 6 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" ${hlsPath}`;
+ */
+            /* 2.Segment-Based Encoding for Live Streaming */
+          /*   const ffmpegCommand = `ffmpeg -i ${inputPath} -c:v libx264 -preset veryfast -crf 28 -hls_time 4 -hls_list_size 0 -f hls ${hlsPath}`;
+ */
+              /*3. Lower Resolution Before Encoding */
+              const ffmpegCommand = `ffmpeg -i ${inputPath} -vf "scale=-2:720" -c:v libx264 -preset veryfast -crf 28 ${hlsPath}`;
 
             // Execute ffmpeg command
             exec(ffmpegCommand, (error, stdout, stderr) => {
@@ -117,12 +130,18 @@ export const segmentVideo = async (inputPath, outputPath) => {
                 console.log(`10. Segments:     ${tsFiles.length} files`);
                 console.log("\nSegment List:");
                 console.log("---------------------------------");
-                tsFiles.forEach((file) => {
-                    const size = formatSize(
-                        fs.statSync(path.join(outputPath, file)).size
+
+                // Log resolution, fps, and size for each segment
+                tsFiles.forEach(async (file) => {
+                    const segmentPath = path.join(outputPath, file);
+                    const size = formatSize(fs.statSync(segmentPath).size);
+                    const segmentInfo = await getVideoInfo(segmentPath);
+                    console.log(
+                        `   ${file} (${size}) - Resolution: ${segmentInfo.width}x${segmentInfo.height}, FPS: ${segmentInfo.fps}, Bitrate: ${(segmentInfo.bitrate / 1024 / 1024).toFixed(2)} Mbps
+`
                     );
-                    console.log(`   ${file} (${size})`);
                 });
+
                 console.log("=================================\n");
 
                 resolve({
